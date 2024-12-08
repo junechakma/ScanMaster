@@ -13,6 +13,19 @@ import re
 from difflib import SequenceMatcher
 import tldextract
 import dns.resolver
+from colorama import init, Fore, Back, Style
+from tabulate import tabulate
+init(autoreset=True)  # Initialize colorama
+
+BANNER = '''
+   _____                 __  ___           __           
+  / ___/_________ ___  /  |/  /___ ______/ /____  _____
+  \__ \/ ___/ __ `__ \/ /|_/ / __ `/ ___/ __/ _ \/ ___/
+ ___/ / /__/ / / / / / /  / / /_/ (__  ) /_/  __/ /    
+/____/\___/_/ /_/ /_/_/  /_/\__,_/____/\__/\___/_/     
+                                                        
+[ Cyber Security Project - Web Vulnerability Scanner | Version 1.0 ]
+'''
 
 class ScanMaster:
     def __init__(self, target_url, threads=5):
@@ -30,6 +43,11 @@ class ScanMaster:
             'google.com', 'facebook.com', 'amazon.com', 'apple.com',
             'microsoft.com', 'paypal.com', 'netflix.com', 'instagram.com'
         ]
+        self.findings = {
+            'high': [],
+            'medium': [],
+            'low': []
+        }
 
     def scan_directory(self, directory):
         try:
@@ -49,6 +67,9 @@ class ScanMaster:
                 if result:
                     print(result)
 
+    def add_finding(self, risk_level, description):
+        self.findings[risk_level].append(description)
+
     def check_headers(self):
         print("\n[*] Checking HTTP Headers...")
         try:
@@ -56,22 +77,28 @@ class ScanMaster:
             headers = response.headers
             
             security_headers = {
-                'X-XSS-Protection': 'Missing XSS Protection Header',
-                'X-Frame-Options': 'Missing Clickjacking Protection Header',
-                'X-Content-Type-Options': 'Missing MIME Sniffing Protection Header',
-                'Strict-Transport-Security': 'Missing HSTS Header',
-                'Content-Security-Policy': 'Missing Content Security Policy Header'
+                'X-XSS-Protection': ('Missing XSS Protection Header', 'medium'),
+                'X-Frame-Options': ('Missing Clickjacking Protection Header', 'medium'),
+                'X-Content-Type-Options': ('Missing MIME Sniffing Protection Header', 'low'),
+                'Strict-Transport-Security': ('Missing HSTS Header', 'high'),
+                'Content-Security-Policy': ('Missing Content Security Policy Header', 'high')
             }
 
-            for header, message in security_headers.items():
+            for header, (message, risk) in security_headers.items():
                 if header not in headers:
                     print(f"[-] {message}")
+                    self.add_finding(risk, message)
                 else:
                     print(f"[+] {header}: {headers[header]}")
                     
-            print(f"[+] Server: {headers.get('Server', 'Not disclosed')}")
+            server = headers.get('Server')
+            if server:
+                print(f"[+] Server: {server}")
+                if server.lower() in ['apache', 'nginx', 'iis']:
+                    self.add_finding('low', f'Server version disclosure: {server}')
         except Exception as e:
             print(f"[-] Error checking headers: {str(e)}")
+            self.add_finding('medium', f'Error accessing headers: {str(e)}')
 
     def port_scan(self, port):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -97,6 +124,7 @@ class ScanMaster:
         print("\n[*] Checking SSL/TLS Configuration...")
         if not self.target_url.startswith('https'):
             print("[-] Site is not using HTTPS")
+            self.add_finding('high', 'Site is not using HTTPS encryption')
             return False
 
         try:
@@ -110,17 +138,22 @@ class ScanMaster:
                     not_after = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
                     if not_after < datetime.now():
                         print("[-] SSL Certificate has expired!")
+                        self.add_finding('high', 'SSL Certificate has expired')
                         return False
                     else:
                         print("[+] SSL Certificate is valid")
                     
-                    # Print certificate information
+                    days_to_expire = (not_after - datetime.now()).days
+                    if days_to_expire < 30:
+                        self.add_finding('medium', f'SSL Certificate expires soon ({days_to_expire} days)')
+                    
                     print(f"[+] Certificate expires: {cert['notAfter']}")
                     print(f"[+] Issued to: {cert['subject'][-1][1]}")
                     print(f"[+] Issued by: {cert['issuer'][-1][1]}")
                     return True
         except Exception as e:
             print(f"[-] SSL/TLS Error: {str(e)}")
+            self.add_finding('high', f'SSL/TLS Error: {str(e)}')
             return False
 
     def check_domain_age(self):
@@ -136,10 +169,12 @@ class ScanMaster:
             
             if domain_age < 30:
                 print("[-] Warning: Domain is less than 30 days old!")
+                self.add_finding('medium', 'Domain is less than 30 days old')
                 return False
             return True
         except Exception as e:
             print(f"[-] Error checking domain age: {str(e)}")
+            self.add_finding('medium', f'Error checking domain age: {str(e)}')
             return False
 
     def check_domain_similarity(self):
@@ -160,6 +195,7 @@ class ScanMaster:
             print("[-] Warning: Similar to legitimate domains:")
             for domain, similarity in similar_domains:
                 print(f"    - {domain} (Similarity: {similarity:.2f}%)")
+                self.add_finding('medium', f'Similar to legitimate domain: {domain} ({similarity:.2f}%)')
             return False
         return True
 
@@ -186,6 +222,7 @@ class ScanMaster:
             print("[-] Warning: Suspicious patterns found in URL:")
             for pattern in found_patterns:
                 print(f"    - Matches pattern: {pattern}")
+                self.add_finding('medium', f'Suspicious pattern found in URL: {pattern}')
             return False
         return True
 
@@ -215,9 +252,12 @@ class ScanMaster:
             except:
                 print("[-] No A records found")
             
+            if not records_exist:
+                self.add_finding('medium', 'No DNS records found')
             return records_exist
         except Exception as e:
             print(f"[-] Error analyzing DNS records: {str(e)}")
+            self.add_finding('medium', f'Error analyzing DNS records: {str(e)}')
             return False
 
     def check_for_phishing(self):
@@ -245,6 +285,53 @@ class ScanMaster:
         
         return len(failed_checks) == 0
 
+    def generate_report(self):
+        print("\n" + "=" * 60)
+        print(f"{Fore.CYAN}[*] Security Scan Report for {self.target_url}{Style.RESET_ALL}")
+        print("=" * 60 + "\n")
+
+        # High Risk Findings
+        high_risk_table = []
+        for finding in self.findings['high']:
+            high_risk_table.append([finding])
+        
+        if high_risk_table:
+            print(f"{Fore.RED}High Risk Findings:{Style.RESET_ALL}")
+            print(tabulate(high_risk_table, tablefmt="grid", headers=["Description"]))
+            print()
+
+        # Medium Risk Findings
+        medium_risk_table = []
+        for finding in self.findings['medium']:
+            medium_risk_table.append([finding])
+        
+        if medium_risk_table:
+            print(f"{Fore.YELLOW}Medium Risk Findings:{Style.RESET_ALL}")
+            print(tabulate(medium_risk_table, tablefmt="grid", headers=["Description"]))
+            print()
+
+        # Low Risk Findings
+        low_risk_table = []
+        for finding in self.findings['low']:
+            low_risk_table.append([finding])
+        
+        if low_risk_table:
+            print(f"{Fore.GREEN}Low Risk Findings:{Style.RESET_ALL}")
+            print(tabulate(low_risk_table, tablefmt="grid", headers=["Description"]))
+            print()
+
+        # Summary
+        total_findings = len(self.findings['high']) + len(self.findings['medium']) + len(self.findings['low'])
+        summary_table = [
+            ["High Risk", len(self.findings['high']), f"{Fore.RED}●{Style.RESET_ALL}"],
+            ["Medium Risk", len(self.findings['medium']), f"{Fore.YELLOW}●{Style.RESET_ALL}"],
+            ["Low Risk", len(self.findings['low']), f"{Fore.GREEN}●{Style.RESET_ALL}"],
+            ["Total Findings", total_findings, ""]
+        ]
+        
+        print(f"{Fore.CYAN}Summary:{Style.RESET_ALL}")
+        print(tabulate(summary_table, headers=["Risk Level", "Count", "Indicator"], tablefmt="grid"))
+
     def run_scan(self):
         print(f"\n[+] Starting vulnerability scan on {self.target_url}")
         print("=" * 60)
@@ -255,8 +342,10 @@ class ScanMaster:
         self.check_for_phishing()
         
         print("\n[+] Scan completed!")
+        self.generate_report()
 
 def main():
+    print(BANNER)
     parser = argparse.ArgumentParser(description='Web Vulnerability Scanner')
     parser.add_argument('-u', '--url', required=True, help='Target URL to scan')
     parser.add_argument('-t', '--threads', type=int, default=5, help='Number of threads (default: 5)')
